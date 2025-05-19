@@ -2,6 +2,8 @@
 Objective: Define data validation and serialization models for course resources.
 This file defines the Pydantic models used for validating course-related data
 in requests and responses, ensuring type safety and data integrity.
+
+
 """
 
 from typing import Optional, List

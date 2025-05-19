@@ -46,7 +46,7 @@ This router setup follows RESTful API best practices by organizing resources int
 """
 
 from fastapi import APIRouter  # Import FastAPI's router for organizing endpoints
-from app.api.v1.endpoints import auth, users, courses, enrollments, payments, schedules, documents, notifications
+from app.api.v1.endpoints import auth, users, courses, enrollments, payments, schedules, documents, notifications, programs
 
 # Create the main v1 API router
 api_router = APIRouter()
@@ -107,4 +107,11 @@ api_router.include_router(
     notifications.router,
     prefix="/notifications",  # All notification endpoints will be under /api/v1/notifications/*
     tags=["notifications"]  # Swagger/OpenAPI tag for grouping
+)
+
+# Program management endpoints
+api_router.include_router(
+    programs.router,
+    prefix="/programs",  # All program endpoints will be under /api/v1/programs/*
+    tags=["programs"]  # Swagger/OpenAPI tag for grouping
 )

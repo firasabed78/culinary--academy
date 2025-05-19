@@ -52,126 +52,145 @@ This base service class serves as a foundation for more specialized service clas
 The service layer is a crucial part of your application's architecture, providing a clear place for business rules and domain logic while delegating data access to repositories. This separation creates a more maintainable and testable codebase as the application grows in complexity.
 
 """
+"""
+base.py - Base service class for business logic
+This file defines the foundation for service classes that implement
+business logic for the Culinary Academy Student Registration system.
+It provides a standard interface for interacting with CRUD operations.
+"""
 
-from typing import Generic, TypeVar, List, Optional, Type, Any, Union, Dict
-from sqlalchemy.orm import Session
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, Union
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
 from app.db.base_class import Base
-from app.repositories.base import BaseRepository
+from app.core.exceptions import NotFoundError
 
-# Type variables for generic typing
-ModelType = TypeVar("ModelType", bound=Base)  # SQLAlchemy model type
-CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)  # Creation schema type
-UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)  # Update schema type
-RepositoryType = TypeVar("RepositoryType", bound=BaseRepository)  # Repository type
+ModelType = TypeVar("ModelType", bound=Base)
+CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
+UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
+CRUDType = TypeVar("CRUDType")
 
-class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType, RepositoryType]):
+
+class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType, CRUDType]):
     """
-    Base service providing business logic operations.
-    
-    This generic class implements standard business logic operations
-    while delegating data access to the repository layer, following
-    the Service pattern to separate business logic from data access.
+    Base class for service operations with a specific model, providing 
+    standard business logic that uses CRUD operations.
     """
     
-    def __init__(self, repository: Type[RepositoryType]):
+    def __init__(self, crud_class: CRUDType):
         """
-        Initialize service with a specific repository type.
+        Initialize service with a CRUD class.
         
-        Args:
-            repository: The repository class this service will use for data access
+        Parameters
+        ----------
+        crud_class: CRUD class for database operations
         """
-        self.repository = repository()  # Create an instance of the repository
+        self.crud = crud_class
     
     def get(self, db: Session, id: Any) -> Optional[ModelType]:
         """
         Get a single record by ID.
         
-        Retrieves a specific entity from the repository by its ID.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Primary key value
         
-        Args:
-            db: SQLAlchemy database session
-            id: Primary key value to look up
-            
-        Returns:
-            The found record or None if not found
+        Returns
+        -------
+        Optional[ModelType]
+            The model instance if found, None otherwise
         """
-        return self.repository.get(db, id)
+        return self.crud.get(db, id)
     
     def get_multi(
-        self, db: Session, *, skip: int = 0, limit: int = 100, **filters
+        self, db: Session, *, skip: int = 0, limit: int = 100
     ) -> List[ModelType]:
         """
-        Get multiple records with pagination and filters.
+        Get multiple records with pagination.
         
-        Retrieves a paginated list of entities from the repository
-        with optional filtering criteria.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            **filters: Field name/value pairs for filtering
-            
-        Returns:
-            List of matching records
+        Returns
+        -------
+        List[ModelType]
+            List of model instances
         """
-        return self.repository.get_multi(db, skip=skip, limit=limit, **filters)
+        return self.crud.get_multi(db, skip=skip, limit=limit)
     
     def create(self, db: Session, *, obj_in: CreateSchemaType) -> ModelType:
         """
         Create a new record.
         
-        Creates a new entity using the repository.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        obj_in: Pydantic model with create data
         
-        Args:
-            db: SQLAlchemy database session
-            obj_in: Pydantic model with data for the new record
-            
-        Returns:
-            The created record
+        Returns
+        -------
+        ModelType
+            The created model instance
         """
-        return self.repository.create(db, obj_in=obj_in)
+        return self.crud.create(db, obj_in=obj_in)
     
     def update(
-        self, db: Session, *, id: int, obj_in: Union[UpdateSchemaType, Dict[str, Any]]
-    ) -> Optional[ModelType]:
+        self,
+        db: Session,
+        *,
+        id: Any,
+        obj_in: Union[UpdateSchemaType, Dict[str, Any]]
+    ) -> ModelType:
         """
-        Update a record.
+        Update an existing record.
         
-        Updates an existing entity with new data after confirming it exists.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Primary key value
+        obj_in: Update data, either as Pydantic model or dict
         
-        Args:
-            db: SQLAlchemy database session
-            id: Primary key of the record to update
-            obj_in: Pydantic model or dict with update data
+        Returns
+        -------
+        ModelType
+            The updated model instance
             
-        Returns:
-            The updated record or None if not found
+        Raises
+        ------
+        NotFoundError
+            If record with the given ID is not found
         """
-        # First check if the object exists
-        db_obj = self.repository.get(db, id)
-        if db_obj:
-            # If it exists, update it
-            return self.repository.update(db, db_obj=db_obj, obj_in=obj_in)
-        return None  # Return None if object doesn't exist
+        db_obj = self.crud.get(db, id)
+        if not db_obj:
+            raise NotFoundError(detail=f"Record with ID {id} not found")
+        return self.crud.update(db, db_obj=db_obj, obj_in=obj_in)
     
-    def remove(self, db: Session, *, id: int) -> Optional[ModelType]:
+    def remove(self, db: Session, *, id: int) -> ModelType:
         """
-        Delete a record.
+        Remove a record.
         
-        Deletes an entity after confirming it exists.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Primary key value
         
-        Args:
-            db: SQLAlchemy database session
-            id: Primary key of the record to delete
+        Returns
+        -------
+        ModelType
+            The removed model instance
             
-        Returns:
-            The deleted record or None if not found
+        Raises
+        ------
+        NotFoundError
+            If record with the given ID is not found
         """
-        # First check if the object exists
-        db_obj = self.repository.get(db, id)
-        if db_obj:
-            # If it exists, remove it
-            return self.repository.remove(db, id=id)
-        return None  # Return None if object doesn't exist
+        db_obj = self.crud.get(db, id)
+        if not db_obj:
+            raise NotFoundError(detail=f"Record with ID {id} not found")
+        return self.crud.remove(db, id=id)

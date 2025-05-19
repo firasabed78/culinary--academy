@@ -64,55 +64,62 @@ Proper error handling for missing entities
 This service demonstrates the separation of business logic from data access, showing how the service layer adds validation, rule enforcement, and cross-entity operations on top of the repositories' data access functionality.
 The comprehensive validation during enrollment creation is particularly noteworthy, as it enforces multiple business rules before allowing an enrollment to be created, ensuring data integrity and business rule compliance throughout the application.
 """
+"""
+enrollment_service.py - Service layer for enrollment management
+This file handles business logic related to student enrollments in culinary
+courses, including enrollment processing, status management, and capacity tracking.
+"""
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from datetime import datetime
 
 from app.domain.models.enrollment import Enrollment, EnrollmentStatus, PaymentStatus
-from app.domain.schemas.enrollment import EnrollmentCreate, EnrollmentUpdate, Enrollment as EnrollmentSchema
-from app.repositories.enrollment_repository import EnrollmentRepository
-from app.repositories.course_repository import CourseRepository
-from app.services.base import BaseService
+from app.domain.schemas.enrollment import EnrollmentCreate, EnrollmentUpdate
+from app.crud import enrollment as crud_enrollment
+from app.crud import course as crud_course
+from app.crud import user as crud_user
 from app.core.exceptions import NotFoundError, ValidationError
 
 
-class EnrollmentService(BaseService[Enrollment, EnrollmentCreate, EnrollmentUpdate, EnrollmentRepository]):
-    """
-    Service for enrollment operations.
+class EnrollmentService:
+    """Service for enrollment operations using CRUD abstractions."""
     
-    Implements business logic for managing course enrollments,
-    including creation, status updates, and data retrieval.
-    """
-    
-    def __init__(self):
+    def get(self, db: Session, id: int) -> Optional[Enrollment]:
         """
-        Initialize enrollment service.
+        Get an enrollment by ID.
         
-        Sets up the enrollment repository and creates a course repository
-        for course-related validation.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
+        
+        Returns
+        -------
+        Optional[Enrollment]
+            Enrollment if found, None otherwise
         """
-        super().__init__(EnrollmentRepository)
-        self.course_repository = CourseRepository()  # For course validation
+        return crud_enrollment.get(db, id)
     
     def get_with_relations(self, db: Session, id: int) -> Optional[Enrollment]:
         """
         Get an enrollment with related data.
         
-        Retrieves an enrollment record with its related student, course, and payment data,
-        raising an error if not found.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
         
-        Args:
-            db: SQLAlchemy database session
-            id: Enrollment ID
+        Returns
+        -------
+        Optional[Enrollment]
+            Enrollment with relations if found
             
-        Returns:
-            Enrollment with all related data
-            
-        Raises:
-            NotFoundError: If enrollment doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
         """
-        enrollment = self.repository.get_with_relations(db, id)
+        enrollment = crud_enrollment.get_with_relations(db, id)
         if not enrollment:
             raise NotFoundError(detail="Enrollment not found")
         return enrollment
@@ -121,95 +128,224 @@ class EnrollmentService(BaseService[Enrollment, EnrollmentCreate, EnrollmentUpda
         """
         Create a new enrollment with validation.
         
-        Creates a new enrollment after validating course existence, activity status,
-        unique enrollment constraint, and course capacity.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        obj_in: Enrollment creation data
         
-        Args:
-            db: SQLAlchemy database session
-            obj_in: Enrollment creation data
+        Returns
+        -------
+        Enrollment
+            Created enrollment instance
             
-        Returns:
-            Created enrollment
-            
-        Raises:
-            NotFoundError: If course doesn't exist
-            ValidationError: If enrollment validation fails
+        Raises
+        ------
+        NotFoundError
+            If student or course not found
+        ValidationError
+            If enrollment conditions not met
         """
-        # Check if course exists and has capacity
-        course = self.course_repository.get(db, obj_in.course_id)
+        # Check if student exists
+        student = crud_user.get(db, obj_in.student_id)
+        if not student:
+            raise NotFoundError(detail="Student not found")
+        
+        # Validate student role
+        if not crud_user.is_student(student):
+            raise ValidationError(detail="User is not a student")
+        
+        # Check if course exists
+        course = crud_course.get(db, obj_in.course_id)
         if not course:
             raise NotFoundError(detail="Course not found")
         
         # Check if course is active
         if not course.is_active:
-            raise ValidationError(detail="Cannot enroll in inactive course")
+            raise ValidationError(detail="Course is not active")
         
-        # Check if enrollment already exists
-        existing_enrollment = self.repository.get_by_student_and_course(
+        # Check if student is already enrolled
+        existing_enrollment = crud_enrollment.check_student_enrolled(
             db, student_id=obj_in.student_id, course_id=obj_in.course_id
         )
         if existing_enrollment:
             raise ValidationError(detail="Student is already enrolled in this course")
         
-        # Check if course has reached capacity
-        enrollment_count = self.repository.get_count_by_course(db, course_id=obj_in.course_id)
-        if enrollment_count >= course.capacity:
-            raise ValidationError(detail="Course has reached maximum capacity")
+        # Check if course has capacity
+        if course.capacity <= 0:
+            raise ValidationError(detail="Course is full")
         
         # Create enrollment
-        return self.repository.create(db, obj_in=obj_in)
+        enrollment = crud_enrollment.create(db, obj_in=obj_in)
+        
+        # Update course capacity
+        crud_course.update_capacity(db, course_id=obj_in.course_id, change=-1)
+        
+        return enrollment
     
-    def update_status(
-        self, db: Session, *, id: int, status: EnrollmentStatus
+    def update_enrollment(
+        self, db: Session, *, id: int, obj_in: EnrollmentUpdate
     ) -> Enrollment:
         """
-        Update enrollment status.
+        Update an enrollment.
         
-        Changes an enrollment's status (e.g., from pending to approved),
-        raising an error if the enrollment doesn't exist.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
+        obj_in: Update data
         
-        Args:
-            db: SQLAlchemy database session
-            id: Enrollment ID
-            status: New enrollment status
+        Returns
+        -------
+        Enrollment
+            Updated enrollment instance
             
-        Returns:
-            Updated enrollment
-            
-        Raises:
-            NotFoundError: If enrollment doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
         """
-        enrollment = self.repository.get(db, id)
+        enrollment = crud_enrollment.get(db, id)
         if not enrollment:
             raise NotFoundError(detail="Enrollment not found")
         
-        return self.repository.update_status(db, db_obj=enrollment, status=status)
+        return crud_enrollment.update(db, db_obj=enrollment, obj_in=obj_in)
     
-    def update_payment_status(
-        self, db: Session, *, id: int, payment_status: PaymentStatus
-    ) -> Enrollment:
+    def approve_enrollment(self, db: Session, *, id: int) -> Enrollment:
         """
-        Update enrollment payment status.
+        Approve an enrollment.
         
-        Changes an enrollment's payment status (e.g., from pending to paid),
-        raising an error if the enrollment doesn't exist.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
         
-        Args:
-            db: SQLAlchemy database session
-            id: Enrollment ID
-            payment_status: New payment status
+        Returns
+        -------
+        Enrollment
+            Updated enrollment instance
             
-        Returns:
-            Updated enrollment
-            
-        Raises:
-            NotFoundError: If enrollment doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
+        ValidationError
+            If enrollment is not in pending status
         """
-        enrollment = self.repository.get(db, id)
+        enrollment = crud_enrollment.get(db, id)
         if not enrollment:
             raise NotFoundError(detail="Enrollment not found")
         
-        return self.repository.update_payment_status(db, db_obj=enrollment, payment_status=payment_status)
+        if enrollment.status != EnrollmentStatus.PENDING:
+            raise ValidationError(detail="Only pending enrollments can be approved")
+        
+        return crud_enrollment.update_status(db, db_obj=enrollment, status=EnrollmentStatus.APPROVED)
+    
+    def reject_enrollment(self, db: Session, *, id: int, reason: str = None) -> Enrollment:
+        """
+        Reject an enrollment.
+        
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
+        reason: Rejection reason (optional)
+        
+        Returns
+        -------
+        Enrollment
+            Updated enrollment instance
+            
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
+        ValidationError
+            If enrollment is not in pending status
+        """
+        enrollment = crud_enrollment.get(db, id)
+        if not enrollment:
+            raise NotFoundError(detail="Enrollment not found")
+        
+        if enrollment.status != EnrollmentStatus.PENDING:
+            raise ValidationError(detail="Only pending enrollments can be rejected")
+        
+        # Update status and optionally add rejection reason to notes
+        enrollment = crud_enrollment.update_status(db, db_obj=enrollment, status=EnrollmentStatus.REJECTED)
+        
+        if reason:
+            notes = f"{enrollment.notes}\nRejection reason: {reason}" if enrollment.notes else f"Rejection reason: {reason}"
+            enrollment = crud_enrollment.update(db, db_obj=enrollment, obj_in={"notes": notes})
+        
+        # Restore course capacity
+        crud_course.update_capacity(db, course_id=enrollment.course_id, change=1)
+        
+        return enrollment
+    
+    def cancel_enrollment(self, db: Session, *, id: int) -> Enrollment:
+        """
+        Cancel an enrollment (student initiated).
+        
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
+        
+        Returns
+        -------
+        Enrollment
+            Updated enrollment instance
+            
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
+        ValidationError
+            If enrollment cannot be cancelled
+        """
+        enrollment = crud_enrollment.get(db, id)
+        if not enrollment:
+            raise NotFoundError(detail="Enrollment not found")
+        
+        if enrollment.status in [EnrollmentStatus.COMPLETED, EnrollmentStatus.REJECTED]:
+            raise ValidationError(detail="Cannot cancel completed or rejected enrollments")
+        
+        # Update status to rejected (cancelled by student)
+        enrollment = crud_enrollment.update_status(db, db_obj=enrollment, status=EnrollmentStatus.REJECTED)
+        
+        # Restore course capacity
+        crud_course.update_capacity(db, course_id=enrollment.course_id, change=1)
+        
+        return enrollment
+    
+    def complete_enrollment(self, db: Session, *, id: int) -> Enrollment:
+        """
+        Mark an enrollment as completed.
+        
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Enrollment ID
+        
+        Returns
+        -------
+        Enrollment
+            Updated enrollment instance
+            
+        Raises
+        ------
+        NotFoundError
+            If enrollment not found
+        ValidationError
+            If enrollment is not approved
+        """
+        enrollment = crud_enrollment.get(db, id)
+        if not enrollment:
+            raise NotFoundError(detail="Enrollment not found")
+        
+        if enrollment.status != EnrollmentStatus.APPROVED:
+            raise ValidationError(detail="Only approved enrollments can be completed")
+        
+        return crud_enrollment.update_status(db, db_obj=enrollment, status=EnrollmentStatus.COMPLETED)
     
     def get_student_enrollments(
         self, db: Session, *, student_id: int, skip: int = 0, limit: int = 100
@@ -217,18 +353,19 @@ class EnrollmentService(BaseService[Enrollment, EnrollmentCreate, EnrollmentUpda
         """
         Get all enrollments for a student.
         
-        Retrieves all courses that a specific student is enrolled in.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        student_id: Student ID
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            student_id: Student ID
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            
-        Returns:
-            List of enrollments for the student
+        Returns
+        -------
+        List[Enrollment]
+            List of student enrollments
         """
-        return self.repository.get_by_student(db, student_id=student_id)
+        return crud_enrollment.get_by_student(db, student_id=student_id, skip=skip, limit=limit)
     
     def get_course_enrollments(
         self, db: Session, *, course_id: int, skip: int = 0, limit: int = 100
@@ -236,64 +373,71 @@ class EnrollmentService(BaseService[Enrollment, EnrollmentCreate, EnrollmentUpda
         """
         Get all enrollments for a course.
         
-        Retrieves all students enrolled in a specific course.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        course_id: Course ID
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            course_id: Course ID
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            
-        Returns:
-            List of enrollments for the course
+        Returns
+        -------
+        List[Enrollment]
+            List of course enrollments
         """
-        return self.repository.get_by_course(db, course_id=course_id)
+        return crud_enrollment.get_by_course(db, course_id=course_id, skip=skip, limit=limit)
     
-    def get_filtered_enrollments(
-        self, db: Session, *, skip: int = 0, limit: int = 100, **filters
+    def get_enrollments_by_status(
+        self, db: Session, *, status: EnrollmentStatus, skip: int = 0, limit: int = 100
     ) -> List[Enrollment]:
         """
-        Get enrollments with filtering.
+        Get enrollments by status.
         
-        Retrieves enrollments matching various filter criteria with pagination.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        status: Enrollment status
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            **filters: Filter criteria
-            
-        Returns:
-            List of enrollments matching the filter criteria
+        Returns
+        -------
+        List[Enrollment]
+            List of enrollments with specified status
         """
-        return self.repository.get_multi_by_filters(db, skip=skip, limit=limit, **filters)
+        return crud_enrollment.get_by_status(db, status=status, skip=skip, limit=limit)
+    
+    def get_enrollments_by_payment_status(
+        self, db: Session, *, payment_status: PaymentStatus, skip: int = 0, limit: int = 100
+    ) -> List[Enrollment]:
+        """
+        Get enrollments by payment status.
+        
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        payment_status: Payment status
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
+        
+        Returns
+        -------
+        List[Enrollment]
+            List of enrollments with specified payment status
+        """
+        return crud_enrollment.get_by_payment_status(db, payment_status=payment_status, skip=skip, limit=limit)
     
     def get_enrollment_stats(self, db: Session) -> Dict[str, Any]:
         """
         Get enrollment statistics.
         
-        Aggregates statistics about enrollments, including counts by status.
+        Parameters
+        ----------
+        db: SQLAlchemy session
         
-        Args:
-            db: SQLAlchemy database session
-            
-        Returns:
-            Dictionary of enrollment statistics
+        Returns
+        -------
+        Dict[str, Any]
+            Enrollment statistics by status and payment status
         """
-        # Count total enrollments
-        total = db.query(Enrollment).count()
-        
-        # Count enrollments by status
-        pending = db.query(Enrollment).filter(Enrollment.status == EnrollmentStatus.PENDING).count()
-        approved = db.query(Enrollment).filter(Enrollment.status == EnrollmentStatus.APPROVED).count()
-        rejected = db.query(Enrollment).filter(Enrollment.status == EnrollmentStatus.REJECTED).count()
-        completed = db.query(Enrollment).filter(Enrollment.status == EnrollmentStatus.COMPLETED).count()
-        
-        # Return consolidated statistics
-        return {
-            "total": total,
-            "pending": pending,
-            "approved": approved,
-            "rejected": rejected,
-            "completed": completed
-        }
+        return crud_enrollment.get_enrollment_stats(db)

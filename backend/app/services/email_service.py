@@ -61,262 +61,106 @@ The implementation follows email best practices, including proper MIME handling,
 This service integrates with various business processes in your application, such as user registration, enrollment management, and payment processing, providing the notification component of these workflows.
 
 """
+"""
+email_service.py - Service layer for email operations
+This file handles email sending functionality for the Culinary Academy
+Student Registration system, including notification emails, enrollment
+confirmations, and payment receipts.
+"""
+"""
+email_service.py - Service layer for email operations
+This file handles email sending functionality for the Culinary Academy
+Student Registration system, including notification emails, enrollment
+confirmations, and payment receipts.
+"""
 
 import logging
+from typing import List, Optional, Dict, Any
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import smtplib
-from email.mime.text import MIMEText  # For email content
-from email.mime.multipart import MIMEMultipart  # For mixed content emails
-from typing import List, Optional
-from datetime import datetime
 
-from app.core.config import settings  # Application settings
+from app.core.config import settings
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """
-    Service for sending emails.
-    
-    Provides a centralized service for sending various types of email notifications
-    to users, including welcome emails, enrollment updates, and payment receipts.
-    """
+    """Service for email operations."""
     
     def __init__(self):
-        """
-        Initialize the email service.
-        
-        Loads email configuration from application settings,
-        including SMTP server details and sender information.
-        """
-        # SMTP server configuration
-        self.smtp_host = settings.SMTP_HOST  # SMTP server address
-        self.smtp_port = settings.SMTP_PORT  # SMTP server port
-        self.smtp_user = settings.SMTP_USER  # SMTP username
-        self.smtp_password = settings.SMTP_PASSWORD  # SMTP password
-        self.smtp_tls = settings.SMTP_TLS  # Whether to use TLS
-        
-        # Sender information
-        self.from_email = settings.EMAILS_FROM_EMAIL  # Sender email address
-        self.from_name = settings.EMAILS_FROM_NAME  # Sender display name
+        """Initialize email service with SMTP configuration."""
+        self.smtp_server = settings.SMTP_HOST
+        self.smtp_port = settings.SMTP_PORT
+        self.username = settings.SMTP_USER
+        self.password = settings.SMTP_PASSWORD
+        self.from_email = settings.EMAILS_FROM_EMAIL
+        self.from_name = settings.EMAILS_FROM_NAME
     
-    def send_email(
+    def _create_connection(self) -> smtplib.SMTP:
+        """
+        Create SMTP connection.
+        
+        Returns
+        -------
+        smtplib.SMTP
+            SMTP connection instance
+        """
+        try:
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+            server.starttls()
+            server.login(self.username, self.password)
+            return server
+        except Exception as e:
+            logger.error(f"Failed to create SMTP connection: {e}")
+            raise
+    
+    def _send_email(
         self, 
-        email_to: str,  # Recipient email
-        subject: str,   # Email subject
-        body: str,      # Email body content
-        html: bool = True,  # Whether body is HTML or plain text
-        cc: Optional[List[str]] = None,  # Carbon copy recipients
-        bcc: Optional[List[str]] = None  # Blind carbon copy recipients
+        email_to: str, 
+        subject: str, 
+        body: str, 
+        body_type: str = "html"
     ) -> bool:
         """
         Send an email.
         
-        Core method for sending emails with proper MIME formatting,
-        error handling, and logging.
+        Parameters
+        ----------
+        email_to: Recipient email address
+        subject: Email subject
+        body: Email body content
+        body_type: Email body type ("html" or "plain")
         
-        Args:
-            email_to: Recipient email address
-            subject: Email subject line
-            body: Email body content
-            html: Whether body is HTML (True) or plain text (False)
-            cc: List of CC recipients
-            bcc: List of BCC recipients
-            
-        Returns:
+        Returns
+        -------
+        bool
             True if email sent successfully, False otherwise
         """
-        # Skip if SMTP is not configured
-        if not self.smtp_host or not self.smtp_port:
-            logger.warning("SMTP settings not configured, email not sent")
-            return False
-        
-        # Create MIME multipart message
-        message = MIMEMultipart("alternative")
-        message["Subject"] = subject
-        message["From"] = f"{self.from_name} <{self.from_email}>"
-        message["To"] = email_to
-        
-        # Add CC and BCC if provided
-        if cc:
-            message["Cc"] = ", ".join(cc)
-        if bcc:
-            message["Bcc"] = ", ".join(bcc)
-        
-        # Add body content with appropriate MIME type
-        if html:
-            message.attach(MIMEText(body, "html"))
-        else:
-            message.attach(MIMEText(body, "plain"))
-        
         try:
-            # Connect to SMTP server
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                # Use TLS if configured
-                if self.smtp_tls:
-                    server.starttls()
-                
-                # Authenticate if credentials provided
-                if self.smtp_user and self.smtp_password:
-                    server.login(self.smtp_user, self.smtp_password)
-                
-                # Compile all recipients
-                recipients = [email_to]
-                if cc:
-                    recipients.extend(cc)
-                if bcc:
-                    recipients.extend(bcc)
-                
-                # Send the email
-                server.sendmail(
-                    self.from_email,
-                    recipients,
-                    message.as_string()
-                )
+            # Create message
+            msg = MIMEMultipart()
+            msg['From'] = f"{self.from_name} <{self.from_email}>"
+            msg['To'] = email_to
+            msg['Subject'] = subject
             
-            logger.info(f"Email sent to {email_to}")
+            # Attach body
+            if body_type == "html":
+                msg.attach(MIMEText(body, 'html'))
+            else:
+                msg.attach(MIMEText(body, 'plain'))
+            
+            # Send email
+            with self._create_connection() as server:
+                text = msg.as_string()
+                server.sendmail(self.from_email, email_to, text)
+            
+            logger.info(f"Email sent successfully to {email_to}")
             return True
-        
+            
         except Exception as e:
-            # Log any errors that occur
-            logger.error(f"Error sending email to {email_to}: {e}")
+            logger.error(f"Failed to send email to {email_to}: {e}")
             return False
-    
-    def send_welcome_email(self, email_to: str, full_name: str) -> bool:
-        """
-        Send a welcome email to a new user.
-        
-        Sends a formatted welcome message to newly registered users.
-        
-        Args:
-            email_to: User's email address
-            full_name: User's full name for personalization
-            
-        Returns:
-            True if email sent successfully, False otherwise
-        """
-        subject = f"Welcome to {settings.PROJECT_NAME}"
-        body = f"""
-        <html>
-        <body>
-            <h1>Welcome to {settings.PROJECT_NAME}!</h1>
-            <p>Hi {full_name},</p>
-            <p>Thank you for joining our culinary community. We're excited to have you on board.</p>
-            <p>You can now browse courses, enroll, and start your culinary journey.</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
-        </body>
-        </html>
-        """
-        
-        return self.send_email(email_to=email_to, subject=subject, body=body)
-    
-    def send_enrollment_confirmation_email(
-        self, email_to: str, full_name: str, course_title: str
-    ) -> bool:
-        """
-        Send an enrollment confirmation email.
-        
-        Notifies users when their enrollment request has been received.
-        
-        Args:
-            email_to: User's email address
-            full_name: User's full name for personalization
-            course_title: Title of the course enrolled in
-            
-        Returns:
-            True if email sent successfully, False otherwise
-        """
-        subject = f"Enrollment Confirmation - {course_title}"
-        body = f"""
-        <html>
-        <body>
-            <h1>Enrollment Confirmation</h1>
-            <p>Hi {full_name},</p>
-            <p>Your enrollment in <strong>{course_title}</strong> has been received and is pending approval.</p>
-            <p>We'll notify you once your enrollment is processed.</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
-        </body>
-        </html>
-        """
-        
-        return self.send_email(email_to=email_to, subject=subject, body=body)
-    
-    def send_enrollment_status_email(
-        self, email_to: str, full_name: str, course_title: str, status: str
-    ) -> bool:
-        """
-        Send an email about enrollment status change.
-        
-        Notifies users when their enrollment status has been updated
-        (e.g., approved, rejected, completed).
-        
-        Args:
-            email_to: User's email address
-            full_name: User's full name for personalization
-            course_title: Title of the course
-            status: New enrollment status (approved, rejected, completed)
-            
-        Returns:
-            True if email sent successfully, False otherwise
-        """
-        # Map status to friendly text
-        status_text = {
-            "approved": "has been approved",
-            "rejected": "has been rejected",
-            "completed": "has been marked as completed"
-        }.get(status, "has been updated")
-        
-        subject = f"Enrollment Status Update - {course_title}"
-        body = f"""
-        <html>
-        <body>
-            <h1>Enrollment Status Update</h1>
-            <p>Hi {full_name},</p>
-            <p>Your enrollment in <strong>{course_title}</strong> {status_text}.</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
-        </body>
-        </html>
-        """
-        
-        return self.send_email(email_to=email_to, subject=subject, body=body)
-    
-    def send_payment_receipt_email(
-        self, email_to: str, full_name: str, course_title: str, 
-        amount: float, transaction_id: str
-    ) -> bool:
-        """
-        Send a payment receipt email.
-        
-        Provides users with a confirmation and receipt of their payment.
-        
-        Args:
-            email_to: User's email address
-            full_name: User's full name for personalization
-            course_title: Title of the course
-            amount: Payment amount
-            transaction_id: Payment transaction identifier
-            
-        Returns:
-            True if email sent successfully, False otherwise
-        """
-        subject = f"Payment Receipt - {course_title}"
-        body = f"""
-        <html>
-        <body>
-            <h1>Payment Receipt</h1>
-            <p>Hi {full_name},</p>
-            <p>Your payment for <strong>{course_title}</strong> has been processed successfully.</p>
-            <p><strong>Amount:</strong> ${amount:.2f}</p>
-            <p><strong>Transaction ID:</strong> {transaction_id}</p>
-            <p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p>Thank you for your payment!</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
-        </body>
-        </html>
-        """
-        
-        return self.send_email(email_to=email_to, subject=subject, body=body)
     
     def send_notification_email(
         self, email_to: str, subject: str, body: str
@@ -324,60 +168,265 @@ class EmailService:
         """
         Send a notification email.
         
-        Generic method for sending custom notification emails.
+        Parameters
+        ----------
+        email_to: Recipient email address
+        subject: Email subject
+        body: Email content
         
-        Args:
-            email_to: User's email address
-            subject: Email subject
-            body: Email content
-            
-        Returns:
+        Returns
+        -------
+        bool
             True if email sent successfully, False otherwise
         """
         html_body = f"""
         <html>
         <body>
-            <h1>{subject}</h1>
-            <p>{body}</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #333;">{subject}</h2>
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 5px;">
+                    <p>{body}</p>
+                </div>
+                <hr style="margin-top: 30px;">
+                <p style="color: #666; font-size: 12px;">
+                    This email was sent from {self.from_name}. 
+                    If you have any questions, please contact us.
+                </p>
+            </div>
         </body>
         </html>
         """
         
-        return self.send_email(email_to=email_to, subject=subject, body=html_body)
+        return self._send_email(email_to, subject, html_body, "html")
     
-    def send_password_reset_email(
-        self, email_to: str, full_name: str, reset_token: str
+    def send_enrollment_confirmation(
+        self, email_to: str, student_name: str, course_title: str, enrollment_id: int
     ) -> bool:
         """
-        Send a password reset email.
+        Send enrollment confirmation email.
         
-        Sends a password reset link with a secure token to users
-        who have requested to reset their password.
+        Parameters
+        ----------
+        email_to: Student email address
+        student_name: Student's full name
+        course_title: Course title
+        enrollment_id: Enrollment ID
         
-        Args:
-            email_to: User's email address
-            full_name: User's full name for personalization
-            reset_token: Secure token for password reset
-            
-        Returns:
+        Returns
+        -------
+        bool
             True if email sent successfully, False otherwise
         """
-        subject = "Password Reset Request"
-        reset_url = f"{settings.SERVER_HOST}/reset-password?token={reset_token}"
+        subject = f"Enrollment Confirmation - {course_title}"
         
-        body = f"""
+        html_body = f"""
         <html>
         <body>
-            <h1>Password Reset Request</h1>
-            <p>Hi {full_name},</p>
-            <p>We received a request to reset your password. If you didn't make this request, you can ignore this email.</p>
-            <p>To reset your password, click the link below:</p>
-            <p><a href="{reset_url}">Reset Your Password</a></p>
-            <p>This link will expire in 24 hours.</p>
-            <p>Best regards,<br>The {settings.PROJECT_NAME} Team</p>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #28a745;">Enrollment Confirmed!</h2>
+                <p>Dear {student_name},</p>
+                <p>We're excited to confirm your enrollment in <strong>{course_title}</strong>.</p>
+                
+                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0;">Enrollment Details:</h3>
+                    <ul style="list-style: none; padding: 0;">
+                        <li><strong>Enrollment ID:</strong> #{enrollment_id}</li>
+                        <li><strong>Course:</strong> {course_title}</li>
+                        <li><strong>Student:</strong> {student_name}</li>
+                    </ul>
+                </div>
+                
+                <p>You will receive additional information about class schedules and requirements soon.</p>
+                <p>Welcome to the Culinary Academy!</p>
+                
+                <hr style="margin-top: 30px;">
+                <p style="color: #666; font-size: 12px;">
+                    {self.from_name} - Culinary Excellence
+                </p>
+            </div>
         </body>
         </html>
         """
         
-        return self.send_email(email_to=email_to, subject=subject, body=body)
+        return self._send_email(email_to, subject, html_body, "html")
+    
+    def send_payment_confirmation(
+        self, email_to: str, student_name: str, amount: float, course_title: str, transaction_id: str
+    ) -> bool:
+        """
+        Send payment confirmation email.
+        
+        Parameters
+        ----------
+        email_to: Student email address
+        student_name: Student's full name
+        amount: Payment amount
+        course_title: Course title
+        transaction_id: Payment transaction ID
+        
+        Returns
+        -------
+        bool
+            True if email sent successfully, False otherwise
+        """
+        subject = f"Payment Confirmation - {course_title}"
+        
+        html_body = f"""
+        <html>
+        <body>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #28a745;">Payment Confirmed!</h2>
+                <p>Dear {student_name},</p>
+                <p>We have successfully received your payment for <strong>{course_title}</strong>.</p>
+                
+                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0;">Payment Details:</h3>
+                    <ul style="list-style: none; padding: 0;">
+                        <li><strong>Amount:</strong> ${amount:.2f}</li>
+                        <li><strong>Course:</strong> {course_title}</li>
+                        <li><strong>Transaction ID:</strong> {transaction_id}</li>
+                    </ul>
+                </div>
+                
+                <p>You are now fully enrolled in the course. We look forward to seeing you in class!</p>
+                
+                <hr style="margin-top: 30px;">
+                <p style="color: #666; font-size: 12px;">
+                    {self.from_name} - Culinary Excellence
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return self._send_email(email_to, subject, html_body, "html")
+    
+    def send_schedule_update(
+        self, email_to: str, student_name: str, course_title: str, schedule_details: str
+    ) -> bool:
+        """
+        Send schedule update email.
+        
+        Parameters
+        ----------
+        email_to: Student email address
+        student_name: Student's full name
+        course_title: Course title
+        schedule_details: Schedule change details
+        
+        Returns
+        -------
+        bool
+            True if email sent successfully, False otherwise
+        """
+        subject = f"Schedule Update - {course_title}"
+        
+        html_body = f"""
+        <html>
+        <body>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #ffc107;">Schedule Update</h2>
+                <p>Dear {student_name},</p>
+                <p>There has been an update to the schedule for <strong>{course_title}</strong>.</p>
+                
+                <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ffc107;">
+                    <h3 style="margin-top: 0;">Schedule Changes:</h3>
+                    <p>{schedule_details}</p>
+                </div>
+                
+                <p>Please make note of these changes and adjust your schedule accordingly.</p>
+                <p>If you have any questions, please don't hesitate to contact us.</p>
+                
+                <hr style="margin-top: 30px;">
+                <p style="color: #666; font-size: 12px;">
+                    {self.from_name} - Culinary Excellence
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return self._send_email(email_to, subject, html_body, "html")
+    
+    def send_welcome_email(self, email_to: str, full_name: str, role: str) -> bool:
+        """
+        Send welcome email to new users.
+        
+        Parameters
+        ----------
+        email_to: User email address
+        full_name: User's full name
+        role: User role (student, instructor, admin)
+        
+        Returns
+        -------
+        bool
+            True if email sent successfully, False otherwise
+        """
+        subject = "Welcome to Culinary Academy!"
+        
+        role_message = {
+            "student": "We're excited to have you join our culinary community as a student!",
+            "instructor": "We're honored to have you join our team as an instructor!",
+            "admin": "Welcome to the administrative team!"
+        }
+        
+        html_body = f"""
+        <html>
+        <body>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #007bff;">Welcome to Culinary Academy!</h2>
+                <p>Dear {full_name},</p>
+                <p>{role_message.get(role, 'Welcome to our platform!')}</p>
+                
+                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0;">What's Next?</h3>
+                    <ul>
+                        <li>Complete your profile setup</li>
+                        <li>Browse our available courses</li>
+                        <li>Connect with our culinary community</li>
+                    </ul>
+                </div>
+                
+                <p>If you have any questions, our support team is here to help.</p>
+                <p>Happy cooking!</p>
+                
+                <hr style="margin-top: 30px;">
+                <p style="color: #666; font-size: 12px;">
+                    {self.from_name} - Where Culinary Dreams Come True
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return self._send_email(email_to, subject, html_body, "html")
+    
+    def send_bulk_notification(
+        self, email_list: List[str], subject: str, body: str
+    ) -> Dict[str, int]:
+        """
+        Send bulk notification emails.
+        
+        Parameters
+        ----------
+        email_list: List of recipient email addresses
+        subject: Email subject
+        body: Email content
+        
+        Returns
+        -------
+        Dict[str, int]
+            Statistics: {"sent": count, "failed": count}
+        """
+        sent_count = 0
+        failed_count = 0
+        
+        for email in email_list:
+            if self.send_notification_email(email, subject, body):
+                sent_count += 1
+            else:
+                failed_count += 1
+        
+        logger.info(f"Bulk email completed: {sent_count} sent, {failed_count} failed")
+        return {"sent": sent_count, "failed": failed_count}

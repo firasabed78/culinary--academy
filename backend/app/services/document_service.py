@@ -73,190 +73,174 @@ This service demonstrates the integration of file system operations with databas
 The service follows best practices for file storage and validation, ensuring both security and reliability in document handling.
 
 """
+"""
+document_service.py - Service layer for document management
+This file handles business logic related to user documents, including
+upload processing, validation, and retrieval operations. It manages
+the document lifecycle and provides file storage integration.
+"""
 
-from typing import List, Optional, Dict, Any, BinaryIO
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-import os
-import uuid  # For generating unique filenames
-import shutil
-from fastapi import UploadFile  # FastAPI's file upload type
 
 from app.domain.models.document import Document, DocumentType
 from app.domain.schemas.document import DocumentCreate, DocumentUpdate
-from app.repositories.document_repository import DocumentRepository
-from app.services.base import BaseService
+from app.crud import document as crud_document
+from app.crud import user as crud_user
 from app.core.exceptions import NotFoundError, ValidationError
-from app.core.config import settings  # Application settings
+from app.utils.file_storage import FileStorageManager
 
 
-class DocumentService(BaseService[Document, DocumentCreate, DocumentUpdate, DocumentRepository]):
-    """
-    Service for document operations.
-    
-    Extends the base service with document-specific business logic,
-    handling file uploads, storage, retrieval, and validation.
-    """
+class DocumentService:
+    """Service for document operations using CRUD abstractions."""
     
     def __init__(self):
+        # Initialize file storage manager for file operations
+        self.file_storage = FileStorageManager()
+    
+    def get(self, db: Session, id: int) -> Optional[Document]:
         """
-        Initialize the document service.
+        Get a document by ID.
         
-        Sets up the service with document-specific configuration from settings,
-        including upload directory, file size limits, and allowed file types.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Document ID
+        
+        Returns
+        -------
+        Optional[Document]
+            Document if found, None otherwise
         """
-        super().__init__(DocumentRepository)
-        self.upload_dir = settings.UPLOAD_DIR  # Base directory for uploads
-        self.max_size = settings.MAX_UPLOAD_SIZE  # Maximum file size (e.g., 5MB)
-        self.allowed_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx']  # Allowed file types
+        return crud_document.get(db, id)
     
     def get_with_user(self, db: Session, id: int) -> Optional[Document]:
         """
         Get a document with user data.
         
-        Retrieves a document with its owner's information,
-        raising an exception if not found.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Document ID
         
-        Args:
-            db: SQLAlchemy database session
-            id: Document ID
+        Returns
+        -------
+        Optional[Document]
+            Document with user data if found
             
-        Returns:
-            Document with user data
-            
-        Raises:
-            NotFoundError: If document doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If document not found
         """
-        document = self.repository.get_with_user(db, id)
+        document = crud_document.get_with_user(db, id)
         if not document:
             raise NotFoundError(detail="Document not found")
         return document
     
-    async def upload_document(
-        self, db: Session, *, file: UploadFile, document_type: DocumentType, 
-        user_id: int, description: Optional[str] = None
+    def create_document(
+        self, db: Session, *, obj_in: DocumentCreate, file_content: bytes = None
     ) -> Document:
         """
-        Upload a new document.
+        Create a new document with file upload.
         
-        Handles file upload, validation, storage, and database record creation.
-        This method manages both the file system operations and the database record.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        obj_in: Document creation data
+        file_content: File content bytes (optional)
         
-        Args:
-            db: SQLAlchemy database session
-            file: The uploaded file
-            document_type: Type of document being uploaded
-            user_id: ID of the user uploading the document
-            description: Optional description of the document
+        Returns
+        -------
+        Document
+            Created document instance
             
-        Returns:
-            Created document record
-            
-        Raises:
-            ValidationError: If file size or type is invalid
+        Raises
+        ------
+        NotFoundError
+            If user not found
+        ValidationError
+            If file validation fails
         """
-        # Validate file size by reading contents
-        file_size = 0
-        contents = await file.read()  # Read file into memory
-        file_size = len(contents)  # Get file size
-        await file.seek(0)  # Reset file pointer for later use
+        # Check if user exists
+        user = crud_user.get(db, obj_in.user_id)
+        if not user:
+            raise NotFoundError(detail="User not found")
         
-        # Check if file exceeds maximum size
-        if file_size > self.max_size:
-            raise ValidationError(detail=f"File too large. Maximum size is {self.max_size / (1024 * 1024)}MB")
-        
-        # Extract and validate file extension
-        _, ext = os.path.splitext(file.filename)
-        if ext.lower() not in self.allowed_extensions:
-            raise ValidationError(
-                detail=f"File type not allowed. Allowed types: {', '.join(self.allowed_extensions)}"
+        # Validate file if provided
+        if file_content:
+            # Check file size
+            if obj_in.file_size and obj_in.file_size > 10 * 1024 * 1024:  # 10MB limit
+                raise ValidationError(detail="File size exceeds 10MB limit")
+            
+            # Store file and get path
+            file_path = self.file_storage.store_file(
+                file_content=file_content,
+                filename=obj_in.file_name,
+                user_id=obj_in.user_id
             )
+            obj_in.file_path = file_path
         
-        # Create user-specific upload directory
-        user_upload_dir = os.path.join(self.upload_dir, str(user_id))
-        os.makedirs(user_upload_dir, exist_ok=True)
-        
-        # Generate unique filename to prevent collisions
-        unique_filename = f"{uuid.uuid4()}{ext}"
-        file_path = os.path.join(user_upload_dir, unique_filename)
-        
-        # Save file to filesystem
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Create document record in database
-        document_data = DocumentCreate(
-            user_id=user_id,
-            document_type=document_type,
-            description=description,
-            file_name=file.filename,  # Original filename
-            file_path=file_path,      # Storage path
-            file_type=ext.replace('.', ''),  # File extension without dot
-            file_size=file_size       # File size in bytes
-        )
-        
-        return self.repository.create(db, obj_in=document_data)
+        # Create document
+        return crud_document.create(db, obj_in=obj_in)
     
-    def get_document_file(self, db: Session, *, id: int) -> Optional[Dict[str, Any]]:
+    def update_document(
+        self, db: Session, *, id: int, obj_in: DocumentUpdate
+    ) -> Document:
         """
-        Get document file information.
+        Update a document.
         
-        Retrieves file metadata needed for serving the file to users,
-        checking both database record and file existence.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Document ID
+        obj_in: Update data
         
-        Args:
-            db: SQLAlchemy database session
-            id: Document ID
+        Returns
+        -------
+        Document
+            Updated document instance
             
-        Returns:
-            Dictionary with file path, name, and type
-            
-        Raises:
-            NotFoundError: If document or file doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If document not found
         """
-        # Get document record
-        document = self.repository.get(db, id)
+        document = crud_document.get(db, id)
         if not document:
             raise NotFoundError(detail="Document not found")
         
-        # Verify file exists on filesystem
-        if not os.path.exists(document.file_path):
-            raise NotFoundError(detail="Document file not found")
-        
-        # Return file information
-        return {
-            "file_path": document.file_path,
-            "file_name": document.file_name,
-            "file_type": document.file_type
-        }
+        return crud_document.update(db, db_obj=document, obj_in=obj_in)
     
     def delete_document(self, db: Session, *, id: int) -> Document:
         """
         Delete a document and its file.
         
-        Removes both the file from the filesystem and the document record
-        from the database.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        id: Document ID
         
-        Args:
-            db: SQLAlchemy database session
-            id: Document ID
+        Returns
+        -------
+        Document
+            Deleted document instance
             
-        Returns:
-            Deleted document record
-            
-        Raises:
-            NotFoundError: If document doesn't exist
+        Raises
+        ------
+        NotFoundError
+            If document not found
         """
-        # Get document record
-        document = self.repository.get(db, id)
+        document = crud_document.get(db, id)
         if not document:
             raise NotFoundError(detail="Document not found")
         
-        # Delete file from filesystem if it exists
-        if os.path.exists(document.file_path):
-            os.remove(document.file_path)
+        # Delete physical file if it exists
+        if document.file_path:
+            self.file_storage.delete_file(document.file_path)
         
-        # Remove database record
-        return self.repository.remove(db, id=id)
+        # Delete document record
+        return crud_document.remove(db, id=id)
     
     def get_user_documents(
         self, db: Session, *, user_id: int, skip: int = 0, limit: int = 100
@@ -264,18 +248,19 @@ class DocumentService(BaseService[Document, DocumentCreate, DocumentUpdate, Docu
         """
         Get all documents for a user.
         
-        Retrieves documents owned by a specific user with pagination.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        user_id: User ID
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            user_id: User ID
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            
-        Returns:
-            List of documents owned by the user
+        Returns
+        -------
+        List[Document]
+            List of user documents
         """
-        return self.repository.get_by_user(db, user_id=user_id, skip=skip, limit=limit)
+        return crud_document.get_by_user(db, user_id=user_id, skip=skip, limit=limit)
     
     def get_documents_by_type(
         self, db: Session, *, document_type: DocumentType, skip: int = 0, limit: int = 100
@@ -283,34 +268,31 @@ class DocumentService(BaseService[Document, DocumentCreate, DocumentUpdate, Docu
         """
         Get documents by type.
         
-        Retrieves documents of a specific type with pagination.
+        Parameters
+        ----------
+        db: SQLAlchemy session
+        document_type: Document type to filter by
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
         
-        Args:
-            db: SQLAlchemy database session
-            document_type: Document type to filter by
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            
-        Returns:
+        Returns
+        -------
+        List[Document]
             List of documents of the specified type
         """
-        return self.repository.get_by_document_type(db, document_type=document_type, skip=skip, limit=limit)
+        return crud_document.get_by_type(db, document_type=document_type, skip=skip, limit=limit)
     
-    def get_filtered_documents(
-        self, db: Session, *, skip: int = 0, limit: int = 100, **filters
-    ) -> List[Document]:
+    def get_document_stats(self, db: Session) -> Dict[str, Any]:
         """
-        Get documents with filtering.
+        Get document statistics.
         
-        Retrieves documents matching various filter criteria with pagination.
+        Parameters
+        ----------
+        db: SQLAlchemy session
         
-        Args:
-            db: SQLAlchemy database session
-            skip: Number of records to skip (for pagination)
-            limit: Maximum number of records to return
-            **filters: Filter criteria
-            
-        Returns:
-            List of documents matching the filter criteria
+        Returns
+        -------
+        Dict[str, Any]
+            Document statistics by type and user
         """
-        return self.repository.get_multi_by_filters(db, skip=skip, limit=limit, **filters)
+        return crud_document.get_document_stats(db)
